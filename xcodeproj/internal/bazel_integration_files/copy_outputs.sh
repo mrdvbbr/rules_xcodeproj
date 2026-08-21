@@ -46,6 +46,33 @@ if [[ "$ACTION" != indexbuild ]]; then
         "$BAZEL_OUTPUTS_PRODUCT_BASENAME" \
         "$TARGET_BUILD_DIR"
 
+      # Xcode 26.4.1 fix: create framework stub + Modules dir in Bazel submodule output.
+      # Xcode 26.4.1 tries to copy .swiftmodule files into framework Modules dirs that
+      # Bazel doesn't create. We create them in the submodule Bazel output dirs.
+      if [[ "$BAZEL_OUTPUTS_PRODUCT_BASENAME" == *.framework ]]; then
+        fw_name="${BAZEL_OUTPUTS_PRODUCT_BASENAME%.framework}"
+        module_name="${fw_name%Framework}"
+        # pwd is bazel-out/.../bin/Telegram/ — go up one to get bin/
+        bazel_bin_dir="$(pwd)/.."
+        swiftmodule_file=$(find "$bazel_bin_dir" -name "${module_name}.swiftmodule" \
+          -not -path "*/Telegram.app/*" -not -path "*/Telegram/*" 2>/dev/null | head -1)
+        if [[ -n "$swiftmodule_file" ]]; then
+          swiftmodule_dir="$(dirname "$swiftmodule_file")"
+          fw_stub_dir="$swiftmodule_dir/${fw_name}.framework"
+          fw_modules_dir="$fw_stub_dir/Modules/${module_name}.swiftmodule"
+          # Make parent dir writable (Bazel output is read-only)
+          chmod u+w "$swiftmodule_dir" 2>/dev/null || true
+          mkdir -p "$fw_modules_dir/Project"
+          chmod -R u+w "$fw_stub_dir" 2>/dev/null || true
+          # Populate with module files so Xcode copy phase has source
+          cp -f "$swiftmodule_file" "$fw_modules_dir/arm64-apple-ios.swiftmodule" 2>/dev/null || true
+          swiftdoc="${swiftmodule_file%.swiftmodule}.swiftdoc"
+          [[ -f "$swiftdoc" ]] && cp -f "$swiftdoc" "$fw_modules_dir/arm64-apple-ios.swiftdoc" 2>/dev/null || true
+          swiftsource="${swiftmodule_file%.swiftmodule}.swiftsourceinfo"
+          [[ -f "$swiftsource" ]] && cp -f "$swiftsource" "$fw_modules_dir/Project/arm64-apple-ios.swiftsourceinfo" 2>/dev/null || true
+        fi
+      fi
+
       if [[ -n "${TEST_HOST:-}" ]]; then
         # We need to re-sign test frameworks that Xcode placed into the test
         # host un-signed
